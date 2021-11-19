@@ -1,0 +1,123 @@
+#!/usr/bin/env bpftrace
+
+/*
+ * ssl-snitch   
+ *
+ * Identify processes communicating using the TLS protocol
+ * with the OpenSSL library.
+ *
+ * The tool works in two stages:
+ *     1. Intercept TCP connections and remember the 
+ *        destination IP and port
+ *     2. Intercept OpenSSL read and write functions
+ *        and report the witnessed TLS connection
+ *
+ * 18-Nov-2021  Fabien Savy   Initial version
+ *
+ */
+
+#include <linux/socket.h>
+#include <net/sock.h>
+
+BEGIN
+{ 
+  printf("Tracing TLS connections... Press Ctrl-C to exit\n\n");
+  printf("%-8s  ", "TIME");
+  printf("%-20s %-8s %-39s %-6s\n", "COMMAND", "PID", "DADDR", "DPORT");
+}
+
+/*
+ * Intercept tcp_connect event and save the `sock` structure.
+ *
+ * This is done to factorize both `connect` and `accept` events below.
+ */
+kprobe:tcp_connect
+{
+  @connect[pid] = 1;
+  @sock[pid] = (struct sock *) arg0;
+}
+
+/*
+ * Intercept successfully established TCP connections
+ * and remember the PID - (destination port, address) association
+ *
+ * inspired from https://github.com/iovisor/bpftrace/blob/master/tools/tcpconnect.bt
+ */
+kretprobe:tcp_connect,
+kretprobe:inet_csk_accept
+{
+  // Retrieve data from the map if available
+  if (@connect[pid] == 1) {
+    $sock = @sock[pid];
+  } else {
+    $sock = ((struct sock *) retval);
+  }
+
+  $inet_family = $sock->__sk_common.skc_family;
+
+  if ($inet_family == AF_INET || $inet_family == AF_INET6) {
+    // extract destination address ($daddr)
+    if ($inet_family == AF_INET) {
+      $daddr = ntop($sock->__sk_common.skc_daddr);
+    } else {
+      $daddr = ntop($sock->__sk_common.skc_v6_daddr.in6_u.u6_addr8);
+    }
+
+    // extract destination port (mind the endianness!)
+    $dport = $sock->__sk_common.skc_dport;
+    $dport = ($dport >> 8) | (($dport << 8) & 0x00FF00);
+
+    // a bug in LLVM > 10 forces us to use some dark magic
+    // (we push a variable on the stack to protect the misaligned
+    // $dport variable, see https://github.com/iovisor/bpftrace/issues/1332)
+    $last_var = $sock->__sk_common.skc_dport;
+ 
+    // remember the distant host
+    @data[pid] = ($daddr, $dport);
+  }
+
+  // Clear no longer needed data
+  if (@connect[pid] == 1) {
+    delete(@connect[pid]);
+    delete(@sock[pid]);
+  }
+}
+
+/*
+ * Intercept calls to SSL_read and SSL_write
+ * (which always happen after a connection has been established).
+ * Log the target process and clean up data.
+ *
+ * The commented probes target the Firefox cryptography library 
+ */
+// uprobe:/usr/lib/firefox/libnspr4.so:PR_Write,
+// uprobe:/usr/lib/firefox/libnspr4.so:PR_Read,
+uprobe:/lib/x86_64-linux-gnu/libssl.so:SSL_read,
+uprobe:/lib/x86_64-linux-gnu/libssl.so:SSL_write
+{
+  if (@data[pid].1) {
+    time("%H:%M:%S  ");
+    printf("%-20s %-8d %-39s %-6d\n", comm, pid, @data[pid].0, @data[pid].1);
+
+    // delete the association to avoid logging further calls
+    // on the same TCP connection
+    delete(@data[pid]);
+  }
+}
+
+/* 
+ * Get rid of the data of exiting processes
+ * (this would otherwise be a memory leak)
+ */
+tracepoint:sched:sched_process_exit
+{
+  delete(@data[pid]);
+}
+
+/*
+ * Clear all remaining data when the tool exits
+ */
+END
+{
+  clear(@data);
+}
