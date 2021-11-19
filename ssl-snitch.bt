@@ -97,8 +97,8 @@ kretprobe:inet_csk_accept
  */
 // uprobe:/usr/lib/firefox/libnspr4.so:PR_Write,
 // uprobe:/usr/lib/firefox/libnspr4.so:PR_Read,
-uprobe:/lib/x86_64-linux-gnu/libssl.so:SSL_read,
-uprobe:/lib/x86_64-linux-gnu/libssl.so:SSL_write
+uprobe:/usr/lib/x86_64-linux-gnu/libssl.so:SSL_read,
+uprobe:/usr/lib/x86_64-linux-gnu/libssl.so:SSL_write
 {
   if (@data[pid].1) {
     time("%H:%M:%S  ");
