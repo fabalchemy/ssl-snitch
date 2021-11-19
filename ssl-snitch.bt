@@ -6,6 +6,8 @@
  * Identify processes communicating using the TLS protocol
  * with the OpenSSL library.
  *
+ * usage: ./ssl-snitch [port]
+ *
  * The tool works in two stages:
  *     1. Intercept TCP connections and remember the 
  *        destination IP and port
@@ -72,8 +74,11 @@ kretprobe:inet_csk_accept
     // $dport variable, see https://github.com/iovisor/bpftrace/issues/1332)
     $last_var = $sock->__sk_common.skc_dport;
  
-    // remember the distant host
-    @data[pid] = ($daddr, $dport);
+    // filter out uninteresting ports if specified
+    if ($1 == 0 || $1 == $dport) {
+      // remember the distant host
+      @data[pid] = ($daddr, $dport);
+    }
   }
 
   // Clear no longer needed data
