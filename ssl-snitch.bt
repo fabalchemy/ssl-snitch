@@ -66,13 +66,10 @@ kretprobe:inet_csk_accept
     }
 
     // extract destination port (mind the endianness!)
-    $dport = $sock->__sk_common.skc_dport;
-    $dport = ($dport >> 8) | (($dport << 8) & 0x00FF00);
-
-    // a bug in LLVM > 10 forces us to use some dark magic
-    // (we push a variable on the stack to protect the misaligned
-    // $dport variable, see https://github.com/iovisor/bpftrace/issues/1332)
-    $last_var = $sock->__sk_common.skc_dport;
+    // we have to allocate the resulting variable beforehand,
+    // probably because of https://github.com/iovisor/bpftrace/issues/1332
+    $dport = 0;
+    $dport = bswap($sock->__sk_common.skc_dport);
  
     // filter out uninteresting ports if specified
     if ($1 == 0 || $1 == $dport) {
